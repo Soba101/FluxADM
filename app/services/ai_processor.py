@@ -8,13 +8,9 @@ import time
 from datetime import datetime
 from typing import Dict, Any, Optional, List
 import structlog
+import requests
 
-import openai
-try:
-    import anthropic
-    ANTHROPIC_AVAILABLE = True
-except ImportError:
-    ANTHROPIC_AVAILABLE = False
+# Local LLM only - no external AI service dependencies
 
 from config import get_settings, get_ai_config
 from app.models import db, AIAnalysisResult, ChangeRequest
@@ -35,20 +31,17 @@ class AIProcessor:
         self._initialize_clients()
         
     def _initialize_clients(self):
-        """Initialize AI service clients"""
-        self.openai_client = None
-        self.anthropic_client = None
+        """Initialize local LLM client only"""
+        self.local_llm_available = False
         
-        # Initialize OpenAI
-        if self.settings.OPENAI_API_KEY:
-            openai.api_key = self.settings.OPENAI_API_KEY
-            self.openai_client = openai
-        
-        # Initialize Anthropic
-        if ANTHROPIC_AVAILABLE and self.settings.ANTHROPIC_API_KEY:
-            self.anthropic_client = anthropic.Anthropic(
-                api_key=self.settings.ANTHROPIC_API_KEY
-            )
+        # Check local LLM availability
+        try:
+            response = requests.get(f"{self.settings.LOCAL_LLM_ENDPOINT}/v1/models", timeout=5)
+            if response.status_code == 200:
+                self.local_llm_available = True
+                logger.info("Local LLM endpoint available", endpoint=self.settings.LOCAL_LLM_ENDPOINT)
+        except Exception as e:
+            logger.warning("Local LLM endpoint not available", error=str(e))
     
     async def analyze_change_request(self, cr_id: str, document_content: str) -> Dict[str, Any]:
         """
@@ -181,49 +174,46 @@ class AIProcessor:
         """
         start_time = time.time()
         
-        # Determine which service to use
-        if service_preference == "primary" and self.ai_config.has_openai:
-            service_name = "openai"
-            model = self.settings.AI_MODEL_PRIMARY
-        elif service_preference == "fallback" and self.ai_config.has_anthropic:
-            service_name = "anthropic" 
-            model = "claude-3-sonnet-20240229"
-        elif self.ai_config.has_openai:
-            service_name = "openai"
-            model = self.settings.AI_MODEL_FALLBACK
+        # Use local LLM only
+        if self.local_llm_available:
+            service_name = "local"
+            model = self.settings.LOCAL_LLM_MODEL
         else:
-            raise Exception("No AI services available")
+            raise Exception("Local LLM not available")
         
         # Make API call with retries
         max_retries = self.settings.AI_MAX_RETRIES
         
         for attempt in range(max_retries + 1):
             try:
-                if service_name == "openai":
-                    result = await self._call_openai(prompt, model)
-                elif service_name == "anthropic":
-                    result = await self._call_anthropic(prompt, model)
+                if service_name == "local":
+                    result = await self._call_local_llm(prompt, model)
                 else:
                     raise Exception(f"Unknown service: {service_name}")
                 
                 processing_time = int((time.time() - start_time) * 1000)
                 
-                # Record successful analysis
-                analysis_record = AIAnalysisResult(
-                    cr_id=cr_id,
-                    analysis_type=analysis_type,
-                    ai_model_used=model,
-                    provider=service_name,
-                    processing_time_ms=processing_time,
-                    confidence_score=result.get('confidence', 0.8),
-                    raw_response=result,
-                    structured_result=result,
-                    input_tokens=result.get('input_tokens', 0),
-                    output_tokens=result.get('output_tokens', 0)
-                )
-                
-                db.session.add(analysis_record)
-                db.session.commit()
+                # Record successful analysis (skip database save for standalone mode)
+                try:
+                    analysis_record = AIAnalysisResult(
+                        cr_id=cr_id,
+                        analysis_type=analysis_type,
+                        ai_model_used=model,
+                        provider=service_name,
+                        processing_time_ms=processing_time,
+                        confidence_score=result.get('confidence', 0.8),
+                        raw_response=result,
+                        structured_result=result,
+                        input_tokens=result.get('input_tokens', 0),
+                        output_tokens=result.get('output_tokens', 0)
+                    )
+                    
+                    db.session.add(analysis_record)
+                    db.session.commit()
+                    logger.info("Analysis record saved to database")
+                except Exception as db_error:
+                    logger.warning("Failed to save analysis to database", error=str(db_error))
+                    # Continue without database save - this allows standalone analysis
                 
                 logger.info("AI service call successful",
                            service=service_name,
@@ -248,173 +238,155 @@ class AIProcessor:
                                max_retries=max_retries,
                                error=str(e))
                     
-                    # Record failed analysis
-                    analysis_record = AIAnalysisResult(
-                        cr_id=cr_id,
-                        analysis_type=analysis_type,
-                        ai_model_used=model,
-                        provider=service_name,
-                        processing_time_ms=int((time.time() - start_time) * 1000),
-                        confidence_score=0.0,
-                        error_occurred='true',
-                        error_message=str(e),
-                        retry_count=attempt + 1
-                    )
-                    
-                    db.session.add(analysis_record)
-                    db.session.commit()
+                    # Record failed analysis (skip database save for standalone mode)
+                    try:
+                        analysis_record = AIAnalysisResult(
+                            cr_id=cr_id,
+                            analysis_type=analysis_type,
+                            ai_model_used=model,
+                            provider=service_name,
+                            processing_time_ms=int((time.time() - start_time) * 1000),
+                            confidence_score=0.0,
+                            error_occurred='true',
+                            error_message=str(e),
+                            retry_count=attempt + 1
+                        )
+                        
+                        db.session.add(analysis_record)
+                        db.session.commit()
+                    except Exception as db_error:
+                        logger.warning("Failed to save error analysis to database", error=str(db_error))
                     
                     raise e
     
-    async def _call_openai(self, prompt: str, model: str) -> Dict[str, Any]:
-        """Call OpenAI API"""
+    # External AI services removed - using local LLM only
+    
+    async def _call_local_llm(self, prompt: str, model: str) -> Dict[str, Any]:
+        """Call local LLM via LM Studio endpoint"""
         
-        response = await openai.ChatCompletion.acreate(
-            model=model,
-            messages=[
-                {"role": "system", "content": "You are an expert IT change management analyst with deep knowledge of ITIL processes, risk assessment, and quality management."},
-                {"role": "user", "content": prompt}
+        if not self.local_llm_available:
+            raise Exception("Local LLM endpoint not available")
+        
+        # Prepare the request payload for OpenAI-compatible endpoint
+        payload = {
+            "model": model,
+            "messages": [
+                {
+                    "role": "system", 
+                    "content": "You are an expert IT change management analyst with deep knowledge of ITIL processes, risk assessment, and quality management. Provide structured, accurate responses in JSON format when requested."
+                },
+                {
+                    "role": "user", 
+                    "content": prompt
+                }
             ],
-            max_tokens=self.settings.AI_MAX_TOKENS,
-            temperature=self.settings.AI_TEMPERATURE,
-            timeout=self.settings.AI_TIMEOUT
+            "max_tokens": self.settings.AI_MAX_TOKENS,
+            "temperature": self.settings.AI_TEMPERATURE,
+            "stream": False
+        }
+        
+        # Make the API call
+        response = requests.post(
+            f"{self.settings.LOCAL_LLM_ENDPOINT}/v1/chat/completions",
+            json=payload,
+            timeout=self.settings.AI_TIMEOUT,
+            headers={"Content-Type": "application/json"}
         )
         
-        # Extract and parse response
-        content = response.choices[0].message.content
+        if response.status_code != 200:
+            raise Exception(f"Local LLM API error: {response.status_code} - {response.text}")
+        
+        response_data = response.json()
+        
+        # Extract response content
+        content = response_data['choices'][0]['message']['content']
+        usage = response_data.get('usage', {})
         
         return {
             'response': content,
             'model': model,
-            'provider': 'openai',
-            'input_tokens': response.usage.prompt_tokens,
-            'output_tokens': response.usage.completion_tokens,
-            'total_tokens': response.usage.total_tokens
-        }
-    
-    async def _call_anthropic(self, prompt: str, model: str) -> Dict[str, Any]:
-        """Call Anthropic Claude API"""
-        
-        if not self.anthropic_client:
-            raise Exception("Anthropic client not initialized")
-        
-        message = await self.anthropic_client.messages.create(
-            model=model,
-            max_tokens=self.settings.AI_MAX_TOKENS,
-            temperature=self.settings.AI_TEMPERATURE,
-            messages=[
-                {"role": "user", "content": prompt}
-            ]
-        )
-        
-        return {
-            'response': message.content[0].text,
-            'model': model,
-            'provider': 'anthropic',
-            'input_tokens': message.usage.input_tokens,
-            'output_tokens': message.usage.output_tokens,
-            'total_tokens': message.usage.input_tokens + message.usage.output_tokens
+            'provider': 'local',
+            'input_tokens': usage.get('prompt_tokens', 0),
+            'output_tokens': usage.get('completion_tokens', 0),
+            'total_tokens': usage.get('total_tokens', 0),
+            'confidence': 0.9  # Local models generally consistent
         }
     
     def _build_categorization_prompt(self, content: str) -> str:
         """Build prompt for CR categorization"""
         
-        return f"""
-        Analyze this IT change request and provide a structured categorization in JSON format.
-        
-        Document Content:
-        {content[:3000]}  # Limit to avoid token limits
-        
-        Please analyze and respond with JSON containing:
-        {{
-            "category": "one of: emergency, standard, normal, enhancement, infrastructure, security, maintenance, rollback",
-            "priority": "one of: low, medium, high, critical",
-            "title": "clear, concise title for the change",
-            "description": "brief summary of what will be changed",
-            "affected_systems": ["list", "of", "affected", "systems"],
-            "confidence": 0.85,
-            "reasoning": "brief explanation of the categorization decision"
-        }}
-        
-        Focus on accuracy and be conservative with priority/risk levels.
-        Base decisions on ITIL change management best practices.
-        """
+        return f"""Analyze this change request and respond ONLY with valid JSON:
+
+{content[:1500]}
+
+Required JSON format:
+{{
+    "category": "emergency|standard|normal|enhancement|infrastructure|security|maintenance|rollback",
+    "priority": "low|medium|high|critical", 
+    "title": "concise title",
+    "description": "brief summary",
+    "affected_systems": ["system1", "system2"],
+    "confidence": 0.85,
+    "reasoning": "why this categorization"
+}}
+
+Respond with JSON only, no additional text."""
     
     def _build_risk_assessment_prompt(self, content: str) -> str:
         """Build prompt for risk assessment"""
         
-        return f"""
-        Perform a comprehensive risk assessment for this IT change request.
-        
-        Document Content:
-        {content[:3000]}
-        
-        Analyze using a 3x3 risk matrix (Impact × Probability) and respond with JSON:
-        {{
-            "risk_level": "one of: low, medium, high",
-            "risk_score": 4,
-            "impact_score": 2,
-            "probability_score": 2,
-            "risk_factors": [
-                {{"type": "technical", "description": "specific risk", "severity": "medium"}},
-                {{"type": "business", "description": "specific risk", "severity": "low"}}
-            ],
-            "mitigation_recommendations": [
-                "specific recommendation 1",
-                "specific recommendation 2"
-            ],
-            "confidence": 0.82,
-            "requires_additional_review": false
-        }}
-        
-        Consider: technical complexity, system dependencies, timing, resource availability, business impact.
-        Use conservative risk assessment - err on the side of caution.
-        """
+        return f"""Risk assess this change request, respond with JSON only:
+
+{content[:1200]}
+
+Required JSON:
+{{
+    "risk_level": "low|medium|high",
+    "risk_score": 1-9,
+    "impact_score": 1-3,
+    "probability_score": 1-3,
+    "risk_factors": [{{"type": "technical", "description": "risk", "severity": "low|medium|high"}}],
+    "mitigation_recommendations": ["recommendation"],
+    "confidence": 0.8,
+    "requires_additional_review": true
+}}
+
+JSON only, no extra text."""
     
     def _build_quality_check_prompt(self, content: str) -> str:
         """Build prompt for quality assessment"""
         
-        return f"""
-        Assess the quality of this change request and identify any issues or gaps.
-        
-        Document Content:
-        {content[:3000]}
-        
-        Evaluate completeness, clarity, and compliance. Respond with JSON:
-        {{
-            "quality_score": 78,
-            "quality_issues": [
-                {{
-                    "type": "missing_requirements",
-                    "severity": "medium", 
-                    "description": "specific issue found",
-                    "location": "which section/field",
-                    "recommendation": "how to fix"
-                }}
-            ],
-            "completeness_check": {{
-                "business_justification": "complete/incomplete/unclear",
-                "technical_details": "complete/incomplete/unclear",
-                "implementation_plan": "complete/incomplete/unclear",
-                "rollback_plan": "complete/incomplete/unclear",
-                "testing_plan": "complete/incomplete/unclear"
-            }},
-            "compliance_flags": [
-                "any compliance concerns"
-            ],
-            "confidence": 0.90,
-            "overall_assessment": "brief summary of quality level"
-        }}
-        
-        Look for: missing information, unclear requirements, inadequate planning, compliance gaps.
-        """
+        return f"""Quality check this change request, respond with JSON only:
+
+{content[:1000]}
+
+Required JSON:
+{{
+    "quality_score": 0-100,
+    "quality_issues": [{{"type": "missing_info", "severity": "low|medium|high", "description": "issue", "recommendation": "fix"}}],
+    "completeness_check": {{"business_justification": "complete|incomplete", "technical_details": "complete|incomplete", "rollback_plan": "complete|incomplete"}},
+    "compliance_flags": ["flag"],
+    "confidence": 0.9,
+    "overall_assessment": "brief summary"
+}}
+
+JSON only."""
     
     def _parse_categorization_response(self, result: Dict[str, Any]) -> Dict[str, Any]:
         """Parse and validate categorization response"""
         
         try:
-            # Extract JSON from response
-            response_text = result.get('response', '')
+            # Extract JSON from response (handle markdown code blocks)
+            response_text = result.get('response', '').strip()
+            
+            # Remove markdown code blocks if present
+            if response_text.startswith("```json"):
+                response_text = response_text[7:]
+            if response_text.endswith("```"):
+                response_text = response_text[:-3]
+            response_text = response_text.strip()
+            
+            # Find JSON boundaries
             json_start = response_text.find('{')
             json_end = response_text.rfind('}') + 1
             
@@ -445,7 +417,17 @@ class AIProcessor:
         """Parse and validate risk assessment response"""
         
         try:
-            response_text = result.get('response', '')
+            # Extract JSON from response (handle markdown code blocks)
+            response_text = result.get('response', '').strip()
+            
+            # Remove markdown code blocks if present
+            if response_text.startswith("```json"):
+                response_text = response_text[7:]
+            if response_text.endswith("```"):
+                response_text = response_text[:-3]
+            response_text = response_text.strip()
+            
+            # Find JSON boundaries
             json_start = response_text.find('{')
             json_end = response_text.rfind('}') + 1
             
@@ -475,7 +457,17 @@ class AIProcessor:
         """Parse and validate quality check response"""
         
         try:
-            response_text = result.get('response', '')
+            # Extract JSON from response (handle markdown code blocks)
+            response_text = result.get('response', '').strip()
+            
+            # Remove markdown code blocks if present
+            if response_text.startswith("```json"):
+                response_text = response_text[7:]
+            if response_text.endswith("```"):
+                response_text = response_text[:-3]
+            response_text = response_text.strip()
+            
+            # Find JSON boundaries
             json_start = response_text.find('{')
             json_end = response_text.rfind('}') + 1
             

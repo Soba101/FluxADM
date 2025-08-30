@@ -5,10 +5,8 @@ flask-cors==4.0.0
 flask-restx==1.2.0
 gunicorn==21.2.0
 
-# AI & ML
-openai==1.3.8
-anthropic==0.7.8
-tiktoken==0.5.2
+# Local LLM Integration (via HTTP requests to LM Studio)
+# No external AI service dependencies required
 
 # Database
 sqlalchemy==2.0.23

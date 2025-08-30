@@ -1,0 +1,56 @@
+CHANGE REQUEST: Database Performance Optimization
+
+Priority: High
+Category: Infrastructure
+Requester: John Smith, Database Administrator
+Date: 2024-08-30
+
+BUSINESS JUSTIFICATION:
+Our production database has been experiencing significant performance degradation over the past week. Query response times have increased from 200ms to 2.5 seconds on average, causing user complaints and potential business impact. Customer satisfaction scores have dropped by 15% and we're at risk of losing key clients.
+
+We need to optimize database indexes and clean up unused data to restore normal performance levels and prevent further business disruption.
+
+TECHNICAL DETAILS:
+- Rebuild fragmented indexes on customer and orders tables (approx. 2.5M records)
+- Archive old transaction data (older than 2 years, ~500GB of data)
+- Update database statistics and query execution plans
+- Optimize slow-running queries identified in performance analysis
+- Implement connection pooling improvements
+
+AFFECTED SYSTEMS:
+- Production SQL Server database (PROD-DB-01)
+- Customer portal web application
+- Order management system
+- Reporting dashboard
+- Mobile application backend
+
+IMPLEMENTATION PLAN:
+1. Schedule maintenance window during low usage (Saturday 2-4 AM EST)
+2. Take full database backup before making any changes (1 hour)
+3. Execute index rebuilding scripts using automated tools (45 minutes)
+4. Archive old data to separate backup database (30 minutes)
+5. Update statistics and refresh query plans (15 minutes)
+6. Monitor system performance for 24 hours post-implementation
+7. Generate performance comparison report
+
+ROLLBACK PLAN:
+- Restore from full backup if performance degrades further (2 hour RTO)
+- Revert index changes using saved original configurations
+- Emergency contact: DBA team 24/7 on-call
+
+RISK ASSESSMENT:
+Medium risk - Database maintenance during low-usage window minimizes impact. Comprehensive backup strategy provides safety net. Main risks include:
+- Potential extended downtime if issues occur
+- Data corruption (mitigated by backups)
+- Query performance changes requiring tuning
+
+TESTING PLAN:
+- Pre-production testing in staging environment
+- Performance benchmarking before and after
+- Load testing with realistic data volumes
+- User acceptance testing of critical functions
+
+APPROVAL REQUIRED FROM:
+- Database Team Lead
+- Infrastructure Manager  
+- Business Application Owner

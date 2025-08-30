@@ -24,14 +24,14 @@ class Settings(BaseSettings):
     DATABASE_POOL_TIMEOUT: int = 30
     
     # AI Services
-    OPENAI_API_KEY: Optional[str] = None
-    ANTHROPIC_API_KEY: Optional[str] = None
-    AI_MODEL_PRIMARY: str = "gpt-4"
-    AI_MODEL_FALLBACK: str = "gpt-3.5-turbo"
-    AI_MAX_TOKENS: int = 1000
+    LOCAL_LLM_ENDPOINT: str = "http://127.0.0.1:1234"
+    LOCAL_LLM_MODEL: str = "mistralai/mistral-small-3.2"
+    AI_MODEL_PRIMARY: str = "local"  # Use local LLM only
+    AI_MODEL_FALLBACK: str = "local"  # No external fallback
+    AI_MAX_TOKENS: int = 2000  # Reduced for faster responses
     AI_TEMPERATURE: float = 0.1
-    AI_TIMEOUT: int = 30
-    AI_MAX_RETRIES: int = 3
+    AI_TIMEOUT: int = 180  # 3 minutes for local inference
+    AI_MAX_RETRIES: int = 2  # Reduced retries since each takes long
     
     # File Upload
     UPLOAD_FOLDER: str = "data/uploads"
@@ -138,26 +138,17 @@ class AIConfig:
         self.settings = settings
     
     @property
-    def has_openai(self) -> bool:
-        return bool(self.settings.OPENAI_API_KEY)
-    
-    @property
-    def has_anthropic(self) -> bool:
-        return bool(self.settings.ANTHROPIC_API_KEY)
+    def has_local_llm(self) -> bool:
+        return bool(self.settings.LOCAL_LLM_ENDPOINT)
     
     @property
     def has_ai_services(self) -> bool:
-        return self.has_openai or self.has_anthropic
+        return self.has_local_llm
     
     @property
     def primary_service(self) -> str:
         """Determine primary AI service"""
-        if self.has_openai:
-            return "openai"
-        elif self.has_anthropic:
-            return "anthropic"
-        else:
-            return "fallback"
+        return "local"
 
 
 # Global settings instance

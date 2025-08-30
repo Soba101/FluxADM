@@ -15,6 +15,16 @@ import sys
 # Add app directory to Python path
 sys.path.append(os.path.join(os.path.dirname(__file__), 'app'))
 
+# Import FluxADM services
+try:
+    from app.services.file_handler import FileHandler
+    from app.services.ai_processor import AIProcessor
+    import asyncio
+    SERVICES_AVAILABLE = True
+except ImportError as e:
+    st.error(f"⚠️ FluxADM services not available: {e}")
+    SERVICES_AVAILABLE = False
+
 # Page configuration
 st.set_page_config(
     page_title="FluxADM Dashboard",
@@ -508,35 +518,146 @@ def upload_page():
         submit = st.form_submit_button("Analyze Document", width="stretch")
         
         if submit and uploaded_file:
+            if not SERVICES_AVAILABLE:
+                st.error("⚠️ FluxADM services are not available. Please check the installation.")
+                return
+            
             with st.spinner("Processing document..."):
-                # Mock processing
-                import time
-                time.sleep(2)
-                
-                st.success("✅ Document processed successfully!")
-                
-                # Mock analysis results
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.subheader("Analysis Results")
-                    st.metric("Category", "Enhancement")
-                    st.metric("Priority", "Medium")
-                    st.metric("Risk Level", "Low")
-                    st.metric("Quality Score", "82%")
-                    st.metric("AI Confidence", "89%")
-                
-                with col2:
-                    st.subheader("Extracted Information")
-                    st.write("**Title:** User Dashboard Improvements")
-                    st.write("**Affected Systems:** Web Portal, Database")
-                    st.write("**Implementation Time:** 4-6 weeks")
+                try:
+                    # Step 1: Save and extract text from uploaded file
+                    file_handler = FileHandler()
                     
-                    st.subheader("Quality Issues Found")
-                    st.warning("• Missing rollback plan")
-                    st.info("• Consider adding performance metrics")
-                
-                st.info("Change Request CR-2024-000157 has been created and is ready for review.")
+                    # Get file data
+                    file_data = uploaded_file.read()
+                    filename = uploaded_file.name
+                    
+                    # Validate file
+                    is_valid, error_msg = file_handler.validate_file(file_data, filename)
+                    if not is_valid:
+                        st.error(f"❌ File validation failed: {error_msg}")
+                        return
+                    
+                    # Save file
+                    file_path, save_error = file_handler.save_file(file_data, filename)
+                    if save_error:
+                        st.error(f"❌ Failed to save file: {save_error}")
+                        return
+                    
+                    # Extract text
+                    with st.spinner("Extracting text from document..."):
+                        extracted_text, extract_error, metadata = file_handler.extract_text(file_path)
+                        if extract_error:
+                            st.error(f"❌ Text extraction failed: {extract_error}")
+                            return
+                        
+                        if not extracted_text or len(extracted_text.strip()) < 50:
+                            st.warning("⚠️ Very little text was extracted from the document. Analysis may be limited.")
+                    
+                    # Step 2: AI Analysis
+                    with st.spinner("Analyzing document with AI..."):
+                        ai_processor = AIProcessor()
+                        
+                        # Check if local LLM is available
+                        if not ai_processor.local_llm_available:
+                            st.error("❌ Local LLM is not available. Please ensure LM Studio is running at http://127.0.0.1:1234")
+                            return
+                        
+                        # Run async analysis
+                        import uuid
+                        test_cr_id = str(uuid.uuid4())
+                        
+                        # Use asyncio to run the async function
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        try:
+                            analysis_result = loop.run_until_complete(
+                                ai_processor.analyze_change_request(test_cr_id, extracted_text)
+                            )
+                        finally:
+                            loop.close()
+                    
+                    # Step 3: Display Results
+                    st.success("✅ Document processed and analyzed successfully!")
+                    
+                    # Analysis results
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.subheader("🤖 AI Analysis Results")
+                        
+                        # Categorization results
+                        if 'categorization' in analysis_result:
+                            cat = analysis_result['categorization']
+                            st.metric("Category", cat.get('category', 'Unknown').title())
+                            st.metric("Priority", cat.get('priority', 'Unknown').title())
+                            st.metric("AI Confidence", f"{int(cat.get('confidence', 0) * 100)}%")
+                        
+                        # Risk assessment
+                        if 'risk_assessment' in analysis_result:
+                            risk = analysis_result['risk_assessment']
+                            st.metric("Risk Level", risk.get('risk_level', 'Unknown').title())
+                            st.metric("Risk Score", f"{risk.get('risk_score', 0)}/9")
+                        
+                        # Quality check
+                        if 'quality_check' in analysis_result:
+                            quality = analysis_result['quality_check']
+                            st.metric("Quality Score", f"{quality.get('quality_score', 0)}%")
+                    
+                    with col2:
+                        st.subheader("📄 Extracted Information")
+                        
+                        # Document info
+                        st.write(f"**Original Filename:** {filename}")
+                        st.write(f"**File Size:** {len(file_data):,} bytes")
+                        st.write(f"**Text Length:** {len(extracted_text):,} characters")
+                        st.write(f"**Extraction Method:** {metadata.get('extraction_method', 'Unknown')}")
+                        
+                        # Show categorization details
+                        if 'categorization' in analysis_result:
+                            cat = analysis_result['categorization']
+                            if cat.get('title'):
+                                st.write(f"**Suggested Title:** {cat['title'][:100]}...")
+                            if cat.get('affected_systems'):
+                                systems = ', '.join(cat['affected_systems'][:3])
+                                st.write(f"**Affected Systems:** {systems}")
+                            if cat.get('reasoning'):
+                                st.write(f"**AI Reasoning:** {cat['reasoning'][:200]}...")
+                    
+                    # Quality issues
+                    if 'quality_check' in analysis_result:
+                        quality = analysis_result['quality_check']
+                        issues = quality.get('quality_issues', [])
+                        
+                        if issues:
+                            st.subheader("⚠️ Quality Issues Found")
+                            for issue in issues[:5]:  # Show up to 5 issues
+                                severity = issue.get('severity', 'medium')
+                                description = issue.get('description', 'Unknown issue')
+                                if severity == 'high':
+                                    st.error(f"• {description}")
+                                elif severity == 'medium':
+                                    st.warning(f"• {description}")
+                                else:
+                                    st.info(f"• {description}")
+                    
+                    # Overall assessment
+                    overall_confidence = analysis_result.get('overall_confidence', 0)
+                    providers_used = analysis_result.get('providers_used', [])
+                    
+                    if overall_confidence > 0.7:
+                        st.success(f"🎯 High confidence analysis ({int(overall_confidence * 100)}%) using {', '.join(providers_used)}")
+                    elif overall_confidence > 0.5:
+                        st.warning(f"⚠️ Medium confidence analysis ({int(overall_confidence * 100)}%) using {', '.join(providers_used)}")
+                    else:
+                        st.error(f"❌ Low confidence analysis ({int(overall_confidence * 100)}%) using {', '.join(providers_used)}")
+                    
+                    # Text preview
+                    with st.expander("📖 Extracted Text Preview"):
+                        st.text_area("Document Content", extracted_text[:2000] + ("..." if len(extracted_text) > 2000 else ""), height=200)
+                        
+                except Exception as e:
+                    st.error(f"❌ Processing failed: {str(e)}")
+                    st.exception(e)
 
 
 def settings_page():
