@@ -11,12 +11,22 @@ db = SQLAlchemy()
 Base = declarative_base()
 
 # Import all models to ensure they're registered
+# Import User model first to resolve relationships
 from .user import User
+# Import other models that depend on User
 from .change_request import ChangeRequest, ChangeRequestStatus, ChangeRequestCategory, ChangeRequestPriority, ChangeRequestRisk
 from .ai_analysis import AIAnalysisResult
 from .approval_workflow import ApprovalWorkflow, ApprovalStatus
 from .quality_issue import QualityIssue
 from .performance_metric import PerformanceMetric
+
+# Ensure all models are available when imported
+__all__ = [
+    'db', 'init_db', 'User', 'ChangeRequest', 'ChangeRequestStatus', 
+    'ChangeRequestCategory', 'ChangeRequestPriority', 'ChangeRequestRisk',
+    'AIAnalysisResult', 'ApprovalWorkflow', 'ApprovalStatus', 
+    'QualityIssue', 'PerformanceMetric'
+]
 
 
 def init_db(app):

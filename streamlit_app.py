@@ -19,11 +19,78 @@ sys.path.append(os.path.join(os.path.dirname(__file__), 'app'))
 try:
     from app.services.file_handler import FileHandler
     from app.services.ai_processor import AIProcessor
+    from app.models import db, User, ChangeRequest
+    from app.models.change_request import ChangeRequestStatus
+    from flask import Flask
     import asyncio
+    from batch_upload_helper import process_single_file, display_batch_results
     SERVICES_AVAILABLE = True
 except ImportError as e:
     st.error(f"⚠️ FluxADM services not available: {e}")
     SERVICES_AVAILABLE = False
+
+# Database setup
+def get_flask_app():
+    """Create Flask app context for database operations"""
+    if not SERVICES_AVAILABLE:
+        return None
+    
+    app = Flask(__name__)
+    from config import get_settings
+    settings = get_settings()
+    app.config['SQLALCHEMY_DATABASE_URI'] = settings.DATABASE_URL
+    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+    db.init_app(app)
+    return app
+
+def save_change_request(analysis_result, filename, extracted_text, user_title="", user_description=""):
+    """Save analyzed change request to database"""
+    app = get_flask_app()
+    if not app:
+        return None
+    
+    with app.app_context():
+        try:
+            # Get logged-in user or fallback to admin
+            user_email = st.session_state.user_data.get('email', 'admin@fluxadm.com') if st.session_state.user_data else 'admin@fluxadm.com'
+            current_user = User.query.filter_by(email=user_email).first()
+            if not current_user:
+                st.error("Current user not found in database.")
+                return None
+            
+            # Extract data from analysis
+            cat = analysis_result.get('categorization', {})
+            risk = analysis_result.get('risk_assessment', {})
+            quality = analysis_result.get('quality_check', {})
+            
+            # Create new change request
+            cr = ChangeRequest(
+                cr_number=ChangeRequest.generate_cr_number(),
+                title=user_title or cat.get('title', f'Document Analysis - {filename}')[:500],
+                description=user_description or cat.get('description', 'Analyzed from uploaded document')[:1000],
+                business_justification=extracted_text[:2000] if len(extracted_text) > 100 else "Extracted from uploaded document",
+                technical_details=extracted_text[:2000] if len(extracted_text) > 2000 else extracted_text,
+                category=cat.get('category', 'normal'),
+                priority=cat.get('priority', 'medium'), 
+                risk_level=risk.get('risk_level', 'medium'),
+                risk_score=risk.get('risk_score', 4),
+                status=ChangeRequestStatus.SUBMITTED.value,
+                submitter_id=current_user.id,
+                affected_systems=cat.get('affected_systems', []),
+                ai_confidence=analysis_result.get('overall_confidence', 0.5),
+                quality_score=quality.get('quality_score', 50),
+                ai_analysis_summary=analysis_result,
+                file_paths=[filename]
+            )
+            
+            db.session.add(cr)
+            db.session.commit()
+            
+            return cr
+            
+        except Exception as e:
+            st.error(f"Failed to save change request: {e}")
+            return None
 
 # Page configuration
 st.set_page_config(
@@ -157,23 +224,57 @@ def login_page():
             
             if submit:
                 if email and password:
-                    # Mock authentication (replace with real API call)
-                    if email == "admin@fluxadm.com" and password == "admin123":
-                        st.session_state.authenticated = True
-                        st.session_state.user_data = {
-                            'email': email,
-                            'full_name': 'FluxADM Administrator',
-                            'role': 'admin',
-                            'department': 'IT'
-                        }
-                        st.success("Login successful!")
-                        st.rerun()
+                    # Real database authentication
+                    if SERVICES_AVAILABLE:
+                        app = get_flask_app()
+                        if app:
+                            with app.app_context():
+                                try:
+                                    user = User.query.filter_by(email=email).first()
+                                    if user and user.check_password(password) and user.is_active:
+                                        st.session_state.authenticated = True
+                                        st.session_state.user_data = {
+                                            'id': str(user.id),
+                                            'email': user.email,
+                                            'full_name': user.full_name,
+                                            'role': user.role,
+                                            'department': user.department
+                                        }
+                                        st.success(f"Welcome back, {user.full_name}!")
+                                        
+                                        # Update last login
+                                        user.update_last_login()
+                                        
+                                        st.rerun()
+                                    else:
+                                        st.error("Invalid credentials or inactive account")
+                                except Exception as e:
+                                    st.error(f"Login error: {e}")
+                                    # Fallback for development
+                                    if email == "admin@fluxadm.com" and password == "admin123":
+                                        st.session_state.authenticated = True
+                                        st.session_state.user_data = {
+                                            'email': email,
+                                            'full_name': 'FluxADM Administrator',
+                                            'role': 'admin',
+                                            'department': 'IT'
+                                        }
+                                        st.warning("Using fallback authentication")
+                                        st.rerun()
+                        else:
+                            st.error("Database connection failed")
                     else:
-                        st.error("Invalid credentials. Try admin@fluxadm.com / admin123")
+                        st.error("Authentication services not available")
                 else:
                     st.error("Please enter both email and password")
         
-        st.info("Demo credentials: admin@fluxadm.com / admin123")
+        st.info("""
+        **Demo Credentials:**
+        - **Admin**: admin@fluxadm.com / admin123
+        - **Manager**: manager@fluxadm.com / password123
+        - **Analyst**: analyst@fluxadm.com / password123
+        - **User**: user@fluxadm.com / password123
+        """)
 
 
 def sidebar_navigation():
@@ -386,14 +487,18 @@ def analytics_page():
 
 
 def change_requests_page():
-    """Display change requests page"""
+    """Display change requests page with real database data"""
     st.markdown("<h1 class='title-header'>📋 Change Requests</h1>", unsafe_allow_html=True)
+    
+    if not SERVICES_AVAILABLE:
+        st.error("⚠️ Database services not available")
+        return
     
     # Filters
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        status_filter = st.selectbox("Status", ["All", "Draft", "Under Review", "Approved", "In Progress", "Completed"])
+        status_filter = st.selectbox("Status", ["All", "Draft", "Submitted", "Under Review", "Approved", "In Progress", "Completed"])
     
     with col2:
         priority_filter = st.selectbox("Priority", ["All", "Low", "Medium", "High", "Critical"])
@@ -405,6 +510,119 @@ def change_requests_page():
         search_term = st.text_input("Search", placeholder="Search by title...")
     
     st.divider()
+    
+    # Load real data from database
+    app = get_flask_app()
+    if not app:
+        st.error("Unable to connect to database")
+        return
+    
+    with app.app_context():
+        try:
+            # Query change requests
+            query = ChangeRequest.query.order_by(ChangeRequest.created_at.desc())
+            
+            # Apply filters
+            if status_filter != "All":
+                query = query.filter(ChangeRequest.status == status_filter.lower().replace(" ", "_"))
+            if priority_filter != "All":
+                query = query.filter(ChangeRequest.priority == priority_filter.lower())
+            if risk_filter != "All":
+                query = query.filter(ChangeRequest.risk_level == risk_filter.lower())
+            if search_term:
+                query = query.filter(ChangeRequest.title.contains(search_term))
+            
+            change_requests = query.limit(50).all()  # Limit to 50 for performance
+            
+            if not change_requests:
+                st.info("📭 No change requests found. Upload a document to create your first CR!")
+                return
+            
+            # Display metrics
+            total_crs = len(change_requests)
+            st.metric("Total Change Requests", total_crs)
+            
+            # Create DataFrame from database results
+            cr_data = []
+            for cr in change_requests:
+                cr_data.append({
+                    "CR Number": cr.cr_number,
+                    "Title": cr.title[:50] + "..." if len(cr.title) > 50 else cr.title,
+                    "Status": cr.status.replace("_", " ").title(),
+                    "Priority": cr.priority.title(),
+                    "Risk Level": cr.risk_level.title(),
+                    "Quality Score": f"{cr.quality_score}%" if cr.quality_score else "N/A",
+                    "AI Confidence": f"{int(cr.ai_confidence * 100)}%" if cr.ai_confidence else "N/A",
+                    "Created": cr.created_at.strftime("%Y-%m-%d"),
+                    "Submitter": (User.query.get(cr.submitter_id).full_name if User.query.get(cr.submitter_id) else 'Unknown')
+                })
+            
+            df = pd.DataFrame(cr_data)
+            
+            # Display table
+            st.dataframe(df, width="stretch", height=400)
+            
+            # CR details
+            if len(df) > 0:
+                selected_cr_number = st.selectbox(
+                    "Select a Change Request for details:", 
+                    [cr.cr_number for cr in change_requests],
+                    format_func=lambda x: f"{x} - {next(cr.title for cr in change_requests if cr.cr_number == x)[:30]}..."
+                )
+                
+                if selected_cr_number:
+                    selected_cr = next(cr for cr in change_requests if cr.cr_number == selected_cr_number)
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.subheader("Change Request Details")
+                        st.write(f"**Number:** {selected_cr.cr_number}")
+                        st.write(f"**Title:** {selected_cr.title}")
+                        st.write(f"**Status:** {selected_cr.status.replace('_', ' ').title()}")
+                        st.write(f"**Priority:** {selected_cr.priority.title()}")
+                        st.write(f"**Risk Level:** {selected_cr.risk_level.title()}")
+                        st.write(f"**Risk Score:** {selected_cr.risk_score}/9")
+                        st.write(f"**Quality Score:** {selected_cr.quality_score}%")
+                        st.write(f"**AI Confidence:** {int(selected_cr.ai_confidence * 100)}%")
+                        st.write(f"**Submitter:** {selected_(User.query.get(cr.submitter_id).full_name if User.query.get(cr.submitter_id) else 'Unknown')}")
+                        st.write(f"**Created:** {selected_cr.created_at.strftime('%Y-%m-%d %H:%M:%S')}")
+                        
+                        if selected_cr.affected_systems:
+                            st.write(f"**Affected Systems:** {', '.join(selected_cr.affected_systems)}")
+                    
+                    with col2:
+                        st.subheader("Description")
+                        st.write(selected_cr.description)
+                        
+                        if selected_cr.business_justification:
+                            st.subheader("Business Justification")
+                            st.write(selected_cr.business_justification[:300] + "..." if len(selected_cr.business_justification) > 300 else selected_cr.business_justification)
+                        
+                        st.subheader("Actions")
+                        col_a, col_b = st.columns(2)
+                        
+                        with col_a:
+                            if st.button("View Full Details", key=f"view_{selected_cr.id}"):
+                                st.info("Full technical details would open in modal")
+                            
+                            if st.button("Download Files", key=f"download_{selected_cr.id}"):
+                                st.info("File download would start here")
+                        
+                        with col_b:
+                            if selected_cr.status != "completed":
+                                if st.button("Approve", key=f"approve_{selected_cr.id}"):
+                                    st.success("Change request approved!")
+                                    st.experimental_rerun()
+                            
+                            if selected_cr.status == "submitted":
+                                if st.button("Start Review", key=f"review_{selected_cr.id}"):
+                                    st.success("Review started!")
+                                    st.experimental_rerun()
+            
+        except Exception as e:
+            st.error(f"Database error: {e}")
+            return
     
     # Mock CR data
     cr_data = [
@@ -498,12 +716,24 @@ def upload_page():
     
     st.write("Upload a change request document for AI-powered analysis.")
     
+    # Upload mode selection
+    upload_mode = st.radio("Upload Mode", ["Single Document", "Batch Upload (Multiple Documents)"], horizontal=True)
+    
     with st.form("upload_form"):
-        uploaded_file = st.file_uploader(
-            "Choose a file",
-            type=['pdf', 'txt', 'docx', 'doc'],
-            help="Upload PDF, TXT, or Word documents (max 50MB)"
-        )
+        if upload_mode == "Single Document":
+            uploaded_file = st.file_uploader(
+                "Choose a file",
+                type=['pdf', 'txt', 'docx', 'doc'],
+                help="Upload PDF, TXT, or Word documents (max 50MB)"
+            )
+            uploaded_files = [uploaded_file] if uploaded_file else []
+        else:
+            uploaded_files = st.file_uploader(
+                "Choose files",
+                type=['pdf', 'txt', 'docx', 'doc'],
+                help="Upload PDF, TXT, or Word documents (max 50MB each)",
+                accept_multiple_files=True
+            )
         
         title = st.text_input(
             "Title (optional)",
@@ -515,149 +745,47 @@ def upload_page():
             placeholder="Brief description of the change request"
         )
         
-        submit = st.form_submit_button("Analyze Document", width="stretch")
+        submit = st.form_submit_button(f"Analyze {'Document' if upload_mode == 'Single Document' else 'Documents'}", width="stretch")
         
-        if submit and uploaded_file:
+        if submit and uploaded_files:
             if not SERVICES_AVAILABLE:
                 st.error("⚠️ FluxADM services are not available. Please check the installation.")
                 return
             
-            with st.spinner("Processing document..."):
-                try:
-                    # Step 1: Save and extract text from uploaded file
-                    file_handler = FileHandler()
-                    
-                    # Get file data
-                    file_data = uploaded_file.read()
-                    filename = uploaded_file.name
-                    
-                    # Validate file
-                    is_valid, error_msg = file_handler.validate_file(file_data, filename)
-                    if not is_valid:
-                        st.error(f"❌ File validation failed: {error_msg}")
-                        return
-                    
-                    # Save file
-                    file_path, save_error = file_handler.save_file(file_data, filename)
-                    if save_error:
-                        st.error(f"❌ Failed to save file: {save_error}")
-                        return
-                    
-                    # Extract text
-                    with st.spinner("Extracting text from document..."):
-                        extracted_text, extract_error, metadata = file_handler.extract_text(file_path)
-                        if extract_error:
-                            st.error(f"❌ Text extraction failed: {extract_error}")
-                            return
-                        
-                        if not extracted_text or len(extracted_text.strip()) < 50:
-                            st.warning("⚠️ Very little text was extracted from the document. Analysis may be limited.")
-                    
-                    # Step 2: AI Analysis
-                    with st.spinner("Analyzing document with AI..."):
-                        ai_processor = AIProcessor()
-                        
-                        # Check if local LLM is available
-                        if not ai_processor.local_llm_available:
-                            st.error("❌ Local LLM is not available. Please ensure LM Studio is running at http://127.0.0.1:1234")
-                            return
-                        
-                        # Run async analysis
-                        import uuid
-                        test_cr_id = str(uuid.uuid4())
-                        
-                        # Use asyncio to run the async function
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
-                        try:
-                            analysis_result = loop.run_until_complete(
-                                ai_processor.analyze_change_request(test_cr_id, extracted_text)
-                            )
-                        finally:
-                            loop.close()
-                    
-                    # Step 3: Display Results
-                    st.success("✅ Document processed and analyzed successfully!")
-                    
-                    # Analysis results
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        st.subheader("🤖 AI Analysis Results")
-                        
-                        # Categorization results
-                        if 'categorization' in analysis_result:
-                            cat = analysis_result['categorization']
-                            st.metric("Category", cat.get('category', 'Unknown').title())
-                            st.metric("Priority", cat.get('priority', 'Unknown').title())
-                            st.metric("AI Confidence", f"{int(cat.get('confidence', 0) * 100)}%")
-                        
-                        # Risk assessment
-                        if 'risk_assessment' in analysis_result:
-                            risk = analysis_result['risk_assessment']
-                            st.metric("Risk Level", risk.get('risk_level', 'Unknown').title())
-                            st.metric("Risk Score", f"{risk.get('risk_score', 0)}/9")
-                        
-                        # Quality check
-                        if 'quality_check' in analysis_result:
-                            quality = analysis_result['quality_check']
-                            st.metric("Quality Score", f"{quality.get('quality_score', 0)}%")
-                    
-                    with col2:
-                        st.subheader("📄 Extracted Information")
-                        
-                        # Document info
-                        st.write(f"**Original Filename:** {filename}")
-                        st.write(f"**File Size:** {len(file_data):,} bytes")
-                        st.write(f"**Text Length:** {len(extracted_text):,} characters")
-                        st.write(f"**Extraction Method:** {metadata.get('extraction_method', 'Unknown')}")
-                        
-                        # Show categorization details
-                        if 'categorization' in analysis_result:
-                            cat = analysis_result['categorization']
-                            if cat.get('title'):
-                                st.write(f"**Suggested Title:** {cat['title'][:100]}...")
-                            if cat.get('affected_systems'):
-                                systems = ', '.join(cat['affected_systems'][:3])
-                                st.write(f"**Affected Systems:** {systems}")
-                            if cat.get('reasoning'):
-                                st.write(f"**AI Reasoning:** {cat['reasoning'][:200]}...")
-                    
-                    # Quality issues
-                    if 'quality_check' in analysis_result:
-                        quality = analysis_result['quality_check']
-                        issues = quality.get('quality_issues', [])
-                        
-                        if issues:
-                            st.subheader("⚠️ Quality Issues Found")
-                            for issue in issues[:5]:  # Show up to 5 issues
-                                severity = issue.get('severity', 'medium')
-                                description = issue.get('description', 'Unknown issue')
-                                if severity == 'high':
-                                    st.error(f"• {description}")
-                                elif severity == 'medium':
-                                    st.warning(f"• {description}")
-                                else:
-                                    st.info(f"• {description}")
-                    
-                    # Overall assessment
-                    overall_confidence = analysis_result.get('overall_confidence', 0)
-                    providers_used = analysis_result.get('providers_used', [])
-                    
-                    if overall_confidence > 0.7:
-                        st.success(f"🎯 High confidence analysis ({int(overall_confidence * 100)}%) using {', '.join(providers_used)}")
-                    elif overall_confidence > 0.5:
-                        st.warning(f"⚠️ Medium confidence analysis ({int(overall_confidence * 100)}%) using {', '.join(providers_used)}")
-                    else:
-                        st.error(f"❌ Low confidence analysis ({int(overall_confidence * 100)}%) using {', '.join(providers_used)}")
-                    
-                    # Text preview
-                    with st.expander("📖 Extracted Text Preview"):
-                        st.text_area("Document Content", extracted_text[:2000] + ("..." if len(extracted_text) > 2000 else ""), height=200)
-                        
-                except Exception as e:
-                    st.error(f"❌ Processing failed: {str(e)}")
-                    st.exception(e)
+            # Filter out None files (for single upload mode)
+            valid_files = [f for f in uploaded_files if f is not None]
+            
+            if not valid_files:
+                st.error("Please select at least one file to upload.")
+                return
+            
+            st.info(f"Processing {len(valid_files)} file{'s' if len(valid_files) > 1 else ''}...")
+            
+            # Initialize services
+            file_handler = FileHandler()
+            ai_processor = AIProcessor()
+            
+            # Progress tracking
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            results = []
+            
+            # Process each file
+            for idx, uploaded_file in enumerate(valid_files):
+                progress = (idx) / len(valid_files)
+                progress_bar.progress(progress)
+                status_text.text(f"Processing file {idx + 1} of {len(valid_files)}: {uploaded_file.name}")
+                
+                # Process the file
+                result = process_single_file(file_handler, ai_processor, uploaded_file, title, description)
+                results.append(result)
+            
+            # Complete progress
+            progress_bar.progress(1.0)
+            status_text.text("Processing complete!")
+            
+            # Display results
+            display_batch_results(results, save_change_request, title, description)
 
 
 def settings_page():

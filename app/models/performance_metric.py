@@ -70,7 +70,7 @@ class PerformanceMetric(db.Model):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Relationships
-    creator = relationship("User", foreign_keys=[created_by])
+    # creator = relationship("User", foreign_keys=[created_by])  # Disabled to avoid circular imports
     
     @property
     def is_within_target(self) -> bool:

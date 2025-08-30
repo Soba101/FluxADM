@@ -68,7 +68,7 @@ class ApprovalWorkflow(db.Model):
     rejection_reason = Column(Text)
     
     # Relationships
-    escalation_user = relationship("User", foreign_keys=[escalated_to])
+    # escalation_user = relationship("User", foreign_keys=[escalated_to])  # Disabled to avoid circular imports
     
     @property
     def is_overdue(self) -> bool:

@@ -10,6 +10,7 @@ import uuid
 import enum
 
 from . import db
+# Note: User model imported in __init__.py to avoid circular imports
 
 
 class ChangeRequestCategory(enum.Enum):
@@ -91,9 +92,10 @@ class ChangeRequest(db.Model):
     submitter_id = Column(GUID(), ForeignKey('users.id'), nullable=False)
     assignee_id = Column(GUID(), ForeignKey('users.id'))
     
-    # Relationships - using string references to avoid circular imports
-    submitter = relationship("User", foreign_keys=[submitter_id])
-    assignee = relationship("User", foreign_keys=[assignee_id])
+    # Relationships temporarily disabled to avoid circular import issues
+    # These can be accessed via joins when needed:
+    # submitter = relationship("User", foreign_keys=[submitter_id])
+    # assignee = relationship("User", foreign_keys=[assignee_id])
     
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)

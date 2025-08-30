@@ -53,7 +53,7 @@ class AIAnalysisResult(db.Model):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Relationships
-    validator = relationship("User", foreign_keys=[validated_by])
+    # validator = relationship("User", foreign_keys=[validated_by])  # Disabled to avoid circular imports
     
     @property
     def was_successful(self) -> bool:

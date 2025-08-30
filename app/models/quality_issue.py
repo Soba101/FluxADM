@@ -88,8 +88,8 @@ class QualityIssue(db.Model):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Relationships
-    resolver = relationship("User", foreign_keys=[resolver_id], backref="resolved_issues")
-    reviewer = relationship("User", foreign_keys=[reviewed_by], backref="reviewed_issues")
+    # resolver = relationship("User", foreign_keys=[resolver_id], backref="resolved_issues")  # Disabled to avoid circular imports
+    # reviewer = relationship("User", foreign_keys=[reviewed_by], backref="reviewed_issues")  # Disabled to avoid circular imports
     
     @property
     def age_hours(self) -> float:
